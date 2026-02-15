@@ -3,7 +3,10 @@ import definePlugin, { OptionType } from "@utils/types";
 import { findByProps } from "@webpack";
 import { ChannelStore, MessageActions, MessageStore } from "@webpack/common";
 
-const DEFAULT_TEMPLATE = "<@{author_id} said <t:{sent_unix}:R>:\n> {message}\n\n{reply}";
+const DEFAULT_TEMPLATE = `<@{author_id}> [said](https://discord.com/channels/{guild_id}/{channel_id}/{message_id}) <t:{sent_unix}:R>:
+> {message}
+
+{reply}`;
 
 const settings = definePluginSettings({
     replyTemplate: {
@@ -64,8 +67,14 @@ function processTemplate(template: string, message: any, replyContent: string): 
     });
 }
 
+import { Logger } from "@utils/Logger";
+
+const pluginId = "messageLoggerReply";
+const pluginName = "Message Logger Reply";
+const logger = new Logger(pluginName, "#7289da");
+
 export default definePlugin({
-    name: "MessageLoggerReply",
+    name: pluginName,
     description: "Intercepts replies to deleted messages and sends them as quoted text instead. This plugin requires MessageLogger to be able to quote, otherwise it will just stop you from trying.",
     authors: [{name:"Bluscream",id:331103316650393611n},{name:"Antigravity AI",id:0n}],
     settings,

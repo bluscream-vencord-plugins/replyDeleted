@@ -1,49 +1,37 @@
-export const pluginInfo = {
-    id: "replyDeleted",
-    name: "Message Logger Reply",
-    description: "Intercepts replies to deleted messages and sends them as quoted text instead. This plugin requires MessageLogger to be able to quote, otherwise it will just stop you from trying.",
-    color: "#7289da"
-};
-
-import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
+//// Plugin originally written for Equicord at 2026-02-16 by https://github.com/Bluscream, https://antigravity.google
+// region Imports
 import { findByProps } from "@webpack";
 import { ChannelStore, MessageActions, MessageStore } from "@webpack/common";
+import { Logger } from "@utils/Logger";
+import definePlugin from "@utils/types";
 
-const DEFAULT_TEMPLATE = `<@{author_id}> [said](https://discord.com/channels/{guild_id}/{channel_id}/{message_id}) <t:{sent_unix}:R>:
-> {message}
+import { settings } from "./settings";
+// endregion Imports
 
-{reply}`;
+// region PluginInfo
+export const pluginInfo = {
+    id: "replyDeleted",
+    name: "ReplyDeleted",
+    description: "Intercepts replies to deleted messages and sends them as quoted text",
+    color: "#7289da",
+    authors: [
+        { name: "Bluscream", id: 467777925790564352n },
+        { name: "Assistant", id: 0n }
+    ],
+};
+// endregion PluginInfo
 
-const settings = definePluginSettings({
-    replyTemplate: {
-        type: OptionType.STRING,
-        default: DEFAULT_TEMPLATE,
-        description: "Template for replying to deleted messages.",
-        multiline: true,
-    },
-    templateReference: {
-        type: OptionType.STRING,
-        description: "Variables available for the template:",
-        default: "{sent:format} {sent_unix} {author_id} {author_username} {message_id} {channel_id} {guild_id} {message} {reply}",
-        readonly: true,
-        restartNeeded: false,
-        onChange() {
-            settings.store.templateReference = settings.def.templateReference.default;
-        },
-    }
-});
-
+// region Variables
+const logger = new Logger(pluginInfo.id, pluginInfo.color);
 let unpatch: () => void;
+// endregion Variables
 
+// region Utils
 function formatTimestamp(date: Date, format: string): string {
-    // Simple formatter or use moment if available
     try {
         const moment = findByProps("moment")?.moment || (window as any).moment;
         if (moment) return moment(date).format(format);
     } catch { }
-
-    // Fallback simple formatter or just toISOString
     return date.toLocaleString();
 }
 
@@ -74,54 +62,24 @@ function processTemplate(template: string, message: any, replyContent: string): 
     });
 }
 
-import { Logger } from "@utils/Logger";
-
-
-
-const logger = new Logger(pluginInfo.name, pluginInfo.color);
-
-export default definePlugin({
-    name: "Message Logger Reply",
-    description: "Intercepts replies to deleted messages and sends them as quoted text instead. This plugin requires MessageLogger to be able to quote, otherwise it will just stop you from trying.",
-    authors: [{name:"Bluscream",id:331103316650393611n},{name:"Antigravity AI",id:0n}],
-    settings,
-
-    start() {
-        if (!MessageActions) {
-            console.error("MessageLoggerReply: MessageActions not found");
-            return;
-        }
-
-        unpatch = checkAndPatch(MessageActions, "sendMessage");
-    },
-
-    stop() {
-        if (unpatch) unpatch();
-    }
-});
-
 function checkAndPatch(MessageActionCreators: any, funcName: string) {
-    // We use a monkey patch because we might want to intercept the Promise result too
     const original = MessageActionCreators[funcName];
 
-    MessageActionCreators[funcName] = async function(...args: any[]) {
-        // Locate options argument by finding one with messageReference
+    MessageActionCreators[funcName] = async function (...args: any[]) {
         const optionsIndex = args.findIndex(a => a && typeof a === "object" && "messageReference" in a);
 
         if (optionsIndex !== -1) {
             const options = args[optionsIndex];
             const refId = options.messageReference.message_id;
-            const channelId = args[0]; // Channel ID is consistently the first argument
+            const channelId = args[0];
             const message = MessageStore.getMessage(channelId, refId);
 
-            // Scenario C: Message NOT found (potentially deleted but not cached/logged)
             if (!message) {
                 const { showToast, Toasts } = findByProps("showToast");
                 showToast("Cannot reply: Original message not found (potentially deleted).", Toasts.Type.FAILURE);
                 return Promise.reject(new Error("MessageLoggerReply blocked: Message not found"));
             }
 
-            // Scenario A: Message found and marked deleted by MessageLogger
             if (message.deleted) {
                 const contentIndex = 1;
                 const contentArg = args[contentIndex];
@@ -129,29 +87,24 @@ function checkAndPatch(MessageActionCreators: any, funcName: string) {
 
                 const newContentStr = processTemplate(settings.store.replyTemplate, message, rawContent);
 
-                // Update content argument
                 if (typeof contentArg === "string") {
                     args[contentIndex] = newContentStr;
                 } else if (typeof contentArg === "object") {
                     args[contentIndex] = { ...contentArg, content: newContentStr };
                 }
 
-                // Remove message reference from options
                 const newOptions = { ...options };
                 delete newOptions.messageReference;
-                args[optionsIndex] = newOptions; // Replace options in args
+                args[optionsIndex] = newOptions;
 
                 return original.apply(this, args);
             }
         }
 
-        // Scenario B: Normal send, catch specific failures
         try {
             return await original.apply(this, args);
         } catch (err: any) {
-             // Check if error is "Unknown Message" (10008) or similar
             if (optionsIndex !== -1 && (err?.body?.code === 10008 || err?.status === 404)) {
-                // Retry logic if we have the message in store (but server rejected reply)
                 const options = args[optionsIndex];
                 const refId = options.messageReference.message_id;
                 const channelId = args[0];
@@ -164,7 +117,6 @@ function checkAndPatch(MessageActionCreators: any, funcName: string) {
 
                     const newContentStr = processTemplate(settings.store.replyTemplate, message, rawContent);
 
-                     // Update args for retry
                     if (typeof contentArg === "string") {
                         args[contentIndex] = newContentStr;
                     } else {
@@ -186,3 +138,26 @@ function checkAndPatch(MessageActionCreators: any, funcName: string) {
         MessageActionCreators[funcName] = original;
     };
 }
+// endregion Utils
+
+// region Definition
+export default definePlugin({
+    name: pluginInfo.name,
+    description: pluginInfo.description,
+    authors: pluginInfo.authors,
+    settings,
+
+    start() {
+        if (!MessageActions) {
+            logger.error("MessageActions not found");
+            return;
+        }
+
+        unpatch = checkAndPatch(MessageActions, "sendMessage");
+    },
+
+    stop() {
+        if (unpatch) unpatch();
+    }
+});
+// endregion Definition

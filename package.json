@@ -1,13 +1,17 @@
 {
-    "name": "messageLoggerReply",
+    "name": "replyDeleted",
     "version": "1.0.0",
-    "description": "Message Logger Reply",
+    "description": "Intercepts replies to deleted messages and sends them as quoted text",
     "main": "index.tsx",
     "author": {
         "name": "Bluscream",
         "url": "https://github.com/Bluscream"
     },
     "license": "GPL-3.0-or-later",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/bluscream-vencord-plugins/replyDeleted.git"
+    },
     "vencord": {
         "plugin": true,
         "userPlugin": true

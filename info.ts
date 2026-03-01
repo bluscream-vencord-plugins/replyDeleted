@@ -5,6 +5,6 @@ export const pluginInfo = {
     color: "#7289da",
     authors: [
         { name: "Bluscream", id: 467777925790564352n },
-        { name: "Assistant", id: 0n }
+        { name: "Antigravity.AI", id: 0n }
     ],
 };

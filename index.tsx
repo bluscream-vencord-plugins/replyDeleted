@@ -1,14 +1,19 @@
-//// Plugin originally written for Equicord at 2026-02-16 by https://github.com/Bluscream, https://antigravity.google
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+// // Plugin originally written for Equicord at 2026-02-16 by https://github.com/Bluscream, https://antigravity.google
 // region Imports
-import { findByProps } from "@webpack";
-import { ChannelStore, MessageActions, MessageStore } from "@webpack/common";
 import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
+import { findByProps } from "@webpack";
+import { ChannelStore, MessageActions, MessageStore } from "@webpack/common";
 
-import { settings } from "./settings";
 // endregion Imports
-
 import { pluginInfo } from "./info";
+import { settings } from "./settings";
 export { pluginInfo };
 
 // region Variables
@@ -66,7 +71,7 @@ function checkAndPatch(MessageActionCreators: any, funcName: string) {
 
             if (!message) {
                 const { showToast, Toasts } = findByProps("showToast");
-                showToast("Cannot reply: Original message not found (potentially deleted).", Toasts.Type.FAILURE);
+                showToast({ text: "Cannot reply: Original message not found (potentially deleted).", variant: "critical" });
                 return Promise.reject(new Error("MessageLoggerReply blocked: Message not found"));
             }
 

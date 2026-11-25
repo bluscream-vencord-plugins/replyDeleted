@@ -4,155 +4,121 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// // Plugin originally written for Equicord at 2026-02-16 by https://github.com/Bluscream, https://antigravity.google
-// region Imports
-import { Logger } from "@utils/Logger";
-import definePlugin from "@utils/types";
-import { findByProps } from "@webpack";
-import { ChannelStore, MessageActions, MessageStore } from "@webpack/common";
+import { isPluginEnabled } from "@api/PluginManager";
+import { definePluginSettings } from "@api/Settings";
+import { ZWSP } from "@utils/text";
+import definePlugin, { OptionType } from "@utils/types";
+import { Message } from "@vencord/discord-types";
+import { ChannelStore, MessageActions, MessageStore, moment } from "@webpack/common";
 
-// endregion Imports
-import { pluginInfo } from "./info";
-import { settings } from "./settings";
-export { pluginInfo };
+const PATTERNS = {
+    placeholder: /{(\w+)(?::([^}]+))?}/g,
+    mention: /@/g,
+    newline: /\n/g,
+    quotedPlaceholder: /> ?{message}/g,
+    referenceKey: "messageReference",
+    messageLogger: "MessageLogger",
+    defaultDateFormat: "DD/MM/YYYY HH:mm",
+    dmGuild: "@me",
+    maxLength: 2000,
+    defaultTemplate: `{author_username} [said](https://discord.com/channels/{guild_id}/{channel_id}/{message_id}) <t:{sent_unix}:R>:
+{message}
 
-// region Variables
-const logger = new Logger(pluginInfo.id, pluginInfo.color);
-let unpatch: () => void;
-// endregion Variables
+{reply}`
+};
 
-// region Utils
-function formatTimestamp(date: Date, format: string): string {
-    try {
-        const moment = findByProps("moment")?.moment || (window as any).moment;
-        if (moment) return moment(date).format(format);
-    } catch { }
-    return date.toLocaleString();
+const settings = definePluginSettings({
+    replyTemplate: {
+        type: OptionType.STRING,
+        default: PATTERNS.defaultTemplate,
+        description: "Template used when replying to a deleted message. Variables: {sent:format}, {sent_unix}, {author_id}, {author_username}, {message_id}, {channel_id}, {guild_id}, {message} and {reply}.",
+        multiline: true
+    }
+});
+
+type LoggedMessage = Message & { deleted?: boolean; };
+interface ReplyOptions { messageReference?: { message_id: string; }; }
+type MessageContent = string | { content?: string; };
+type SendMessage = (this: unknown, ...args: unknown[]) => unknown;
+
+function isReplyOptions(value: unknown): value is ReplyOptions {
+    return typeof value === "object" && value !== null && PATTERNS.referenceKey in value;
 }
 
-function processTemplate(template: string, message: any, replyContent: string): string {
-    return template.replace(/{(\w+)(?::([^}]+))?}/g, (match, key, arg) => {
+function quote(content: string, budget: number) {
+    if (!content) return "";
+    const safe = content.replace(PATTERNS.mention, `@${ZWSP}`);
+    const cut = safe.length > budget ? safe.slice(0, Math.max(0, budget - 1)) + "…" : safe;
+    return "> " + cut.replace(PATTERNS.newline, "\n> ");
+}
+
+function fill(template: string, message: LoggedMessage, reply: string, quoted: string) {
+    return template.replace(PATTERNS.placeholder, (match, key: string, arg: string | undefined) => {
         switch (key) {
-            case "sent":
-                return formatTimestamp(new Date(message.timestamp), arg || "dd/MM/yyyy HH:mm");
-            case "sent_unix":
-                return Math.floor(new Date(message.timestamp).getTime() / 1000).toString();
-            case "author_id":
-                return message.author.id;
-            case "author_username":
-                return message.author.username;
-            case "message_id":
-                return message.id;
-            case "channel_id":
-                return message.channel_id;
-            case "guild_id":
-                return ChannelStore.getChannel(message.channel_id)?.guild_id || "";
-            case "message":
-                return message.content;
-            case "reply":
-                return replyContent;
-            default:
-                return match;
+            case "sent": return moment(message.timestamp).format(arg || PATTERNS.defaultDateFormat);
+            case "sent_unix": return String(Math.floor(new Date(message.timestamp).getTime() / 1000));
+            case "author_id": return message.author.id;
+            case "author_username": return message.author.username;
+            case "message_id": return message.id;
+            case "channel_id": return message.channel_id;
+            case "guild_id": return ChannelStore.getChannel(message.channel_id)?.guild_id || PATTERNS.dmGuild;
+            case "message": return quoted;
+            case "reply": return reply;
+            default: return match;
         }
     });
 }
 
-function checkAndPatch(MessageActionCreators: any, funcName: string) {
-    const original = MessageActionCreators[funcName];
-
-    MessageActionCreators[funcName] = async function (...args: any[]) {
-        const optionsIndex = args.findIndex(a => a && typeof a === "object" && "messageReference" in a);
-
-        if (optionsIndex !== -1) {
-            const options = args[optionsIndex];
-            const refId = options.messageReference.message_id;
-            const channelId = args[0];
-            const message = MessageStore.getMessage(channelId, refId);
-
-            if (!message) {
-                const { showToast, Toasts } = findByProps("showToast");
-                showToast({ text: "Cannot reply: Original message not found (potentially deleted).", variant: "critical" });
-                return Promise.reject(new Error("MessageLoggerReply blocked: Message not found"));
-            }
-
-            if (message.deleted) {
-                const contentIndex = 1;
-                const contentArg = args[contentIndex];
-                const rawContent = typeof contentArg === "string" ? contentArg : contentArg?.content || "";
-
-                const newContentStr = processTemplate(settings.store.replyTemplate, message, rawContent);
-
-                if (typeof contentArg === "string") {
-                    args[contentIndex] = newContentStr;
-                } else if (typeof contentArg === "object") {
-                    args[contentIndex] = { ...contentArg, content: newContentStr };
-                }
-
-                const newOptions = { ...options };
-                delete newOptions.messageReference;
-                args[optionsIndex] = newOptions;
-
-                return original.apply(this, args);
-            }
-        }
-
-        try {
-            return await original.apply(this, args);
-        } catch (err: any) {
-            if (optionsIndex !== -1 && (err?.body?.code === 10008 || err?.status === 404)) {
-                const options = args[optionsIndex];
-                const refId = options.messageReference.message_id;
-                const channelId = args[0];
-                const message = MessageStore.getMessage(channelId, refId);
-
-                if (message) {
-                    const contentIndex = 1;
-                    const contentArg = args[contentIndex];
-                    const rawContent = typeof contentArg === "string" ? contentArg : contentArg?.content || "";
-
-                    const newContentStr = processTemplate(settings.store.replyTemplate, message, rawContent);
-
-                    if (typeof contentArg === "string") {
-                        args[contentIndex] = newContentStr;
-                    } else {
-                        args[contentIndex] = { ...contentArg, content: newContentStr };
-                    }
-
-                    const newOptions = { ...options };
-                    delete newOptions.messageReference;
-                    args[optionsIndex] = newOptions;
-
-                    return original.apply(this, args);
-                }
-            }
-            throw err;
-        }
-    };
-
-    return () => {
-        MessageActionCreators[funcName] = original;
-    };
+function rewrite(savedTemplate: string, message: LoggedMessage, reply: string) {
+    const template = savedTemplate.replace(PATTERNS.quotedPlaceholder, "{message}");
+    const withoutQuote = fill(template, message, reply, "");
+    return fill(template, message, reply, quote(message.content, PATTERNS.maxLength - withoutQuote.length - 2));
 }
-// endregion Utils
 
-// region Definition
+let original: SendMessage | undefined;
+let active = false;
+
+const wrapper: SendMessage = function (...args) {
+    const send = original as SendMessage;
+    const optionsIndex = args.findIndex(isReplyOptions);
+    if (!active || optionsIndex === -1 || !isPluginEnabled(PATTERNS.messageLogger)) return send.apply(this, args);
+
+    const options = args[optionsIndex] as ReplyOptions;
+    const refId = options.messageReference?.message_id;
+    const message: LoggedMessage | undefined = refId ? MessageStore.getMessage(args[0] as string, refId) : undefined;
+    if (!message?.deleted) return send.apply(this, args);
+
+    const content = args[1] as MessageContent;
+    const reply = typeof content === "string" ? content : content?.content ?? "";
+    const text = rewrite(settings.store.replyTemplate, message, reply);
+    args[1] = typeof content === "string" ? text : { ...content, content: text };
+
+    const { messageReference, ...rest } = options;
+    args[optionsIndex] = rest;
+    return send.apply(this, args);
+};
+
 export default definePlugin({
-    name: pluginInfo.name,
-    description: pluginInfo.description,
-    authors: pluginInfo.authors,
+    name: "ReplyDeleted",
+    description: "Sends replies to messages deleted under MessageLogger as a quote instead of a broken reply.",
+    authors: [
+        { name: "Bluscream", id: 467777925790564352n },
+        { name: "b1uscr34m", id: 896443818935713853n },
+        { name: "Antigravity.AI", id: 0n }
+    ],
     settings,
 
     start() {
-        if (!MessageActions) {
-            logger.error("MessageActions not found");
-            return;
-        }
-
-        unpatch = checkAndPatch(MessageActions, "sendMessage");
+        active = true;
+        if (original) return;
+        original = MessageActions.sendMessage;
+        MessageActions.sendMessage = wrapper;
     },
 
     stop() {
-        if (unpatch) unpatch();
+        active = false;
+        if (MessageActions.sendMessage !== wrapper || !original) return;
+        MessageActions.sendMessage = original;
+        original = undefined;
     }
 });
-// endregion Definition
